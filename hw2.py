@@ -1,129 +1,134 @@
 # -*- coding: utf-8 -*-
-import os
-import numpy as np
-import matplotlib.pyplot as plt
-from PIL import Image
+"""
+Created on Mon Mar 15 09:37:05 2021
 
-# 設定繪圖解析度
+@author: htchen
+"""
+# If this script is not run under spyder IDE, comment the following two lines.
+from IPython import get_ipython
+get_ipython().run_line_magic('reset', '-sf')
+
+import math
+import numpy as np
+from numpy import linalg as la
+import matplotlib.pyplot as plt
+import cv2
+
+import numpy
+# 修正 NumPy 2.x 的導入錯誤，防止無限遞迴
+if not hasattr(numpy, 'linalg'):
+    import numpy.linalg
+    numpy.linalg = numpy.linalg
+
 plt.rcParams['figure.dpi'] = 144 
 
-# --- 防呆機制：生成測試圖 ---
-# 如果沒有這張圖，程式會自動產生一張，避免報錯
-file_path = 'data/svd_demo1.jpg'
-if not os.path.exists(file_path):
-    if not os.path.exists('data'):
-        os.makedirs('data')
-    # 產生 512x512 的隨機雜訊圖
-    dummy_array = np.random.randint(0, 256, (512, 512), dtype=np.uint8)
-    dummy_img = Image.fromarray(dummy_array)
-    dummy_img.save(file_path)
-    print(f"已生成測試圖片於: {file_path}")
-
-# -------------------------------------------
-# 自定義特徵值與 SVD 函式
-# -------------------------------------------
+# calculate the eigenvalues and eigenvectors of a squared matrix
+# the eigenvalues are decreasing ordered
 def myeig(A, symmetric=False):
     if symmetric:
         lambdas, V = np.linalg.eigh(A)
     else:
         lambdas, V = np.linalg.eig(A)
+    # lambdas, V may contain complex value
     lambdas_real = np.real(lambdas)
     sorted_idx = lambdas_real.argsort()[::-1] 
     return lambdas[sorted_idx], V[:, sorted_idx]
 
+# SVD: A = U * Sigma * V^T
+# V: eigenvector matrix of A^T * A; U: eigenvector matrix of A * A^T 
 def mysvd(A):
     lambdas, V = myeig(A.T @ A, symmetric=True)
     lambdas, V = np.real(lambdas), np.real(V)
-    
-    # 數值穩定性處理，避免極小的浮點數誤差
+    # if A is full rank, no lambda value is less than 1e-6 
+    # append a small value to stop rank check
     lambdas = np.append(lambdas, 1e-12)
     rank = np.argwhere(lambdas < 1e-6).min()
     lambdas, V = lambdas[0:rank], V[:, 0:rank]
-    
     U = A @ V / np.sqrt(lambdas)
     Sigma = np.diag(np.sqrt(lambdas))
     return U, Sigma, V
 
-# -------------------------------------------
-# 主程式區塊
-# -------------------------------------------
+# 讀取影像檔, 並保留亮度成分
+img = cv2.imread('svd_demo1.jpg', cv2.IMREAD_GRAYSCALE)
 
-# [關鍵] 使用 PIL 讀取圖片，避開 cv2 與中文路徑的問題
-try:
-    img_pil = Image.open(file_path).convert('L') # 轉為灰階
-    A = np.array(img_pil).astype(np.float64)
-except Exception as e:
-    print(f"讀圖錯誤: {e}")
-    # 萬一真的讀不到，生成隨機矩陣讓程式能跑完
-    A = np.random.rand(512, 512) * 255
+# convert img to float data type
+A = img.astype(dtype=np.float64)
 
-# SVD 分解
+# SVD of A
 U, Sigma, V = mysvd(A)
 VT = V.T
 
-# 計算能量函式 (作業要求補完的部分)
-def compute_energy(X: np.ndarray):
-    # 矩陣能量 = 所有元素的平方和
-    return np.sum(X**2)
 
-# 準備計算 SNR
+def compute_energy(X: np.ndarray):
+    # return energy of X
+    # For more details on the energy of a 2D signal, see the 
+    # class notebook: 內容庫/補充說明/Energy of a 2D Signal.
+    # remove pass and write your code here
+    return np.sum(np.square(X))
+    
+    
+# img_h and img_w are image's height and width, respectively
 img_h, img_w = A.shape
+# Compute SNR
 keep_r = 201
 rs = np.arange(1, keep_r)
 
-# 1. 計算原圖能量
-energy_A = compute_energy(A)
-energy_N = np.zeros(keep_r) 
-snr_list = []
 
-print("正在計算 SNR (請稍候)...")
+# compute energy of A, and save it to variable Energy_A
+energy_A = compute_energy(A)
+
+# Decalre an array to save the energy of noise vs r.
+# energy_N[r] is the energy of A - A_bar(sum of the first r components)
+energy_N = np.zeros(keep_r) # energy_N[0]棄置不用
 
 for r in rs:
-    if r > len(Sigma): 
-        # 如果 r 超過矩陣秩，維持上一個 SNR 值
-        snr_list.append(snr_list[-1])
-        continue
-
-    # 重建影像 A_bar = U_r * Sigma_r * VT_r
+    # A_bar is the sum of the first r comonents of SVD
+    # A_bar is an approximation of A
     A_bar = U[:, 0:r] @ Sigma[0:r, 0:r] @ VT[0:r, :] 
-    
-    # 計算雜訊 (原始 - 重建)
     Noise = A - A_bar 
-    e_noise = compute_energy(Noise)
-    energy_N[r] = e_noise
-    
-    # 計算 SNR
-    if e_noise > 1e-10:
-        snr = 10 * np.log10(energy_A / e_noise)
-    else:
-        snr = 100 # 極大值代表完美重建
-    
-    snr_list.append(snr)
+    energy_N[r] = compute_energy(Noise) 
 
-# 繪圖
-plt.figure(figsize=(8, 6))
-plt.plot(rs, snr_list, 'r-', linewidth=2)
-plt.title('Signal-to-Noise Ratio (SNR) vs Rank r')
+# 計算snr和作圖
+# write your code here
+snrs = []
+for r in rs:
+    # A_bar 是前 r 個成份組成的近似影像
+    # Noise (Nr) 是原圖與近似圖的差異
+    if energy_N[r] > 0:
+        snr_r = 10 * np.log10(energy_A / energy_N[r])
+    else:
+        snr_r = 0
+    snrs.append(snr_r)
+
+# 繪製 SNR 隨 r 變化的圖形
+plt.figure(figsize=(8, 5))
+plt.plot(rs, snrs, 'r-')
+plt.title('$A_{SNR}[r]$ vs. $r$')
 plt.xlabel('r')
 plt.ylabel('SNR (dB)')
 plt.grid(True)
 plt.show()
 
-# --------------------------
-# 驗證步驟
-# --------------------------
-print("\n--- 驗證結果 ---")
-# 特徵值 lambda = 奇異值 sigma 的平方
-singular_values_sq = np.diag(Sigma)**2
+# --- 驗證雜訊能量與特徵值的關係 ---
+# Nr 的能量等於從 r+1 到 n 個特徵值之和
+lambdas_all, _ = myeig(A.T @ A, symmetric=True)
+r_check = 100
+print(f"雜訊能量 (矩陣減法): {energy_N[r_check]}")
+print(f"雜訊能量 (特徵值求和): {np.sum(lambdas_all[r_check:])}")
 
-# 隨機抽樣檢查
-check_indices = [10, 50, 100, 150]
-print(f"{'r':<5} | {'Noise Energy':<20} | {'Sum of Discarded Lambdas':<25}")
-print("-" * 60)
+# --------------------------
+# verify that energy_N[r] equals the sum of lambda_i, i from r+1 to i=n,
+# lambda_i is the eigenvalue of A^T @ A
+# write your code here
+# 取得 A^T @ A 的所有特徵值 (lambdas)
+lambdas_all, _ = myeig(A.T @ A, symmetric=True)
 
-for r in check_indices:
-    if r < len(energy_N):
-        calc_e = energy_N[r]
-        # 理論值 = 捨棄掉的特徵值總和
-        theo_e = np.sum(singular_values_sq[r:])
-        print(f"{r:<5} | {calc_e:<20.4f} | {theo_e:<25.4f}")
+# 隨機選一個 r 來驗證，例如 r = 50
+r_test = 50
+energy_from_loop = energy_N[r_test]
+energy_from_lambdas = np.sum(lambdas_all[r_test:])
+
+print(f"驗證 r={r_test}:")
+print(f"從矩陣減法得到的雜訊能量: {energy_from_loop}")
+print(f"從特徵值求和得到的雜訊能量: {energy_from_lambdas}")
+print(f"誤差值: {abs(energy_from_loop - energy_from_lambdas)}")
